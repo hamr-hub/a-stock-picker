@@ -218,18 +218,32 @@ class StockScreener:
             filtered = filtered.sort_values(pe_col)
         return filtered.head(top_n)
     
-    def kdj_strategy(self, df: pd.DataFrame, top_n: int = 20) -> pd.DataFrame:
+    def kdj_strategy(self, df: pd.DataFrame, top_n: int = 5) -> pd.DataFrame:
         """
-        KDJ 选股策略（基于日线）
-        筛选条件：J 线在 K 线和 D 线下方
-        排序：J 线偏离 K/D 均值越大（越低）排名越靠前
+        KDJ 选股策略（基于日线，大盘股）
+        筛选条件：
+        - 大盘股：市值 >= 500亿
+        - J 线在 K 线和 D 线下方
+        排序：股价越高 + J线偏离KD越大 综合排名
         """
-        stock_list = df['代码'].tolist() if '代码' in df.columns else []
-        
+        mv_candidates = ['总市值', 'total_mv', '总市值(亿)']
+        price_candidates = ['最新价', '收盘', 'close', '最新价格']
+        mv_col = next((c for c in mv_candidates if c in df.columns), None)
+        price_col = next((c for c in price_candidates if c in df.columns), None)
+
+        filtered_df = df.copy()
+        if mv_col:
+            filtered_df[mv_col] = pd.to_numeric(filtered_df[mv_col], errors='coerce')
+            max_mv = filtered_df[mv_col].max()
+            mv_threshold = 500e8 if max_mv > 1e9 else 500
+            filtered_df = filtered_df[filtered_df[mv_col] >= mv_threshold]
+
+        stock_list = filtered_df['代码'].tolist() if '代码' in filtered_df.columns else []
+
         total = len(stock_list)
-        print(f"开始计算 KDJ，共 {total} 只股票...", file=sys.stderr)
-        
-        df_indexed = df.set_index('代码')
+        print(f"大盘股（市值>=500亿）共 {total} 只，开始计算 KDJ...", file=sys.stderr)
+
+        df_indexed = filtered_df.set_index('代码')
         results = []
         done = [0]
 
@@ -262,16 +276,34 @@ class StockScreener:
             futures = {executor.submit(calc_one, code): code for code in stock_list}
             for future in as_completed(futures):
                 done[0] += 1
-                if done[0] % 500 == 0:
+                if done[0] % 200 == 0:
                     print(f"进度: {done[0]}/{total}", file=sys.stderr)
                 row = future.result()
                 if row:
                     results.append(row)
-        
+
         result_df = pd.DataFrame(results)
         if result_df.empty:
             return result_df
-        result_df = result_df.sort_values('J偏离KD', ascending=False)
+
+        if price_col and price_col in result_df.columns:
+            result_df[price_col] = pd.to_numeric(result_df[price_col], errors='coerce')
+            price_max = result_df[price_col].max()
+            price_min = result_df[price_col].min()
+            dev_max = result_df['J偏离KD'].max()
+            dev_min = result_df['J偏离KD'].min()
+
+            price_range = price_max - price_min if price_max != price_min else 1
+            dev_range = dev_max - dev_min if dev_max != dev_min else 1
+
+            result_df['price_norm'] = (result_df[price_col] - price_min) / price_range
+            result_df['dev_norm'] = (result_df['J偏离KD'] - dev_min) / dev_range
+            result_df['综合得分'] = result_df['price_norm'] * 0.5 + result_df['dev_norm'] * 0.5
+            result_df = result_df.sort_values('综合得分', ascending=False)
+            result_df = result_df.drop(columns=['price_norm', 'dev_norm', '综合得分'])
+        else:
+            result_df = result_df.sort_values('J偏离KD', ascending=False)
+
         return result_df.head(top_n)
     
     def run_screening(self, strategy: str = "value", top_n: int = 20) -> pd.DataFrame:
@@ -365,7 +397,7 @@ def main():
         
         # 选择输出列
         if args.strategy == 'kdj':
-            output_cols = ['代码', '名称', '最新价', '涨跌幅', 'K', 'D', 'J', 'KD均值', 'J偏离KD', '换手率', '总市值']
+            output_cols = ['代码', '名称', '最新价', '收盘', '涨跌幅', 'K', 'D', 'J', 'KD均值', 'J偏离KD', '换手率', '总市值']
         else:
             output_cols = ['代码', '名称', '最新价', '涨跌幅', '市盈率', '市净率', '换手率', '总市值']
         available_cols = [c for c in output_cols if c in result.columns]
