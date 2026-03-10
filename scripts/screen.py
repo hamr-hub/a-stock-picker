@@ -9,6 +9,7 @@ import sys
 import pandas as pd
 from typing import List, Dict, Callable
 from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # 导入数据模块
 try:
@@ -29,6 +30,7 @@ class StockScreener:
             "momentum": self.momentum_strategy,
             "technical": self.technical_strategy,
             "dividend": self.dividend_strategy,
+            "kdj": self.kdj_strategy,
         }
     
     def value_strategy(self, df: pd.DataFrame, top_n: int = 20) -> pd.DataFrame:
@@ -118,17 +120,71 @@ class StockScreener:
         - PE < 15
         - 市值 > 100亿
         """
-        # AKShare 的分红数据需要单独获取，这里简化处理
-        # 实际使用时可以结合 ak.stock_dividend_cninfo()
         filtered = df[
             (df['市盈率'] < 15) &
             (df['市净率'] < 2) &
             (df['总市值'] > 100e8) &
-            (df['涨跌幅'] > -10)  # 排除ST等异常股票
+            (df['涨跌幅'] > -10)
         ].copy()
         
         filtered = filtered.sort_values('市盈率')
         return filtered.head(top_n)
+    
+    def kdj_strategy(self, df: pd.DataFrame, top_n: int = 20) -> pd.DataFrame:
+        """
+        KDJ 选股策略（基于日线）
+        筛选条件：J 线在 K 线和 D 线下方
+        排序：J 线偏离 K/D 均值越大（越低）排名越靠前
+        """
+        stock_list = df['代码'].tolist() if '代码' in df.columns else []
+        
+        total = len(stock_list)
+        print(f"开始计算 KDJ，共 {total} 只股票...", file=sys.stderr)
+        
+        df_indexed = df.set_index('代码')
+        results = []
+        done = [0]
+
+        def calc_one(code):
+            try:
+                daily = self.data_api.get_stock_daily(code, days=60)
+                if daily.empty or len(daily) < 15:
+                    return None
+                daily = self.data_api.calculate_kdj(daily)
+                latest = daily.iloc[-1]
+                k_val = latest['K']
+                d_val = latest['D']
+                j_val = latest['J']
+                kd_avg = (k_val + d_val) / 2
+                deviation = kd_avg - j_val
+                if j_val < k_val and j_val < d_val:
+                    row = df_indexed.loc[code].to_dict()
+                    row['代码'] = code
+                    row['K'] = round(k_val, 2)
+                    row['D'] = round(d_val, 2)
+                    row['J'] = round(j_val, 2)
+                    row['KD均值'] = round(kd_avg, 2)
+                    row['J偏离KD'] = round(deviation, 2)
+                    return row
+            except Exception:
+                pass
+            return None
+
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            futures = {executor.submit(calc_one, code): code for code in stock_list}
+            for future in as_completed(futures):
+                done[0] += 1
+                if done[0] % 500 == 0:
+                    print(f"进度: {done[0]}/{total}", file=sys.stderr)
+                row = future.result()
+                if row:
+                    results.append(row)
+        
+        result_df = pd.DataFrame(results)
+        if result_df.empty:
+            return result_df
+        result_df = result_df.sort_values('J偏离KD', ascending=False)
+        return result_df.head(top_n)
     
     def run_screening(self, strategy: str = "value", top_n: int = 20) -> pd.DataFrame:
         """
@@ -194,7 +250,7 @@ def main():
     parser = argparse.ArgumentParser(description='A股选股工具')
     parser.add_argument('command', choices=['screen', 'analyze'], help='命令')
     parser.add_argument('--strategy', '-s', default='value', 
-                       choices=['value', 'growth', 'momentum', 'technical', 'dividend'],
+                       choices=['value', 'growth', 'momentum', 'technical', 'dividend', 'kdj'],
                        help='选股策略')
     parser.add_argument('--top', '-n', type=int, default=20, help='返回数量')
     parser.add_argument('--symbol', help='股票代码（用于analyze命令）')
@@ -209,7 +265,10 @@ def main():
         result = screener.run_screening(args.strategy, args.top)
         
         # 选择输出列
-        output_cols = ['代码', '名称', '最新价', '涨跌幅', '市盈率', '市净率', '换手率', '总市值']
+        if args.strategy == 'kdj':
+            output_cols = ['代码', '名称', '最新价', '涨跌幅', 'K', 'D', 'J', 'KD均值', 'J偏离KD', '换手率', '总市值']
+        else:
+            output_cols = ['代码', '名称', '最新价', '涨跌幅', '市盈率', '市净率', '换手率', '总市值']
         available_cols = [c for c in output_cols if c in result.columns]
         result = result[available_cols]
         

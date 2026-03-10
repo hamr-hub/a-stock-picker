@@ -103,6 +103,21 @@ class AStockData:
         return rsi
     
     @staticmethod
+    def calculate_kdj(df: pd.DataFrame, n: int = 9, m1: int = 3, m2: int = 3) -> pd.DataFrame:
+        """计算 KDJ 指标"""
+        low_min = df['最低'].rolling(window=n).min()
+        high_max = df['最高'].rolling(window=n).max()
+        rsv = (df['收盘'] - low_min) / (high_max - low_min) * 100
+        rsv = rsv.fillna(50)
+        k = rsv.ewm(com=m1 - 1, adjust=False).mean()
+        d = k.ewm(com=m2 - 1, adjust=False).mean()
+        j = 3 * k - 2 * d
+        df['K'] = k
+        df['D'] = d
+        df['J'] = j
+        return df
+
+    @staticmethod
     def get_news_sentiment(symbol: str) -> List[dict]:
         """
         获取个股新闻（用于情绪分析）

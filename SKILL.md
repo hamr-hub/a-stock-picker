@@ -1,6 +1,6 @@
 ---
 name: a-stock-picker
-description: A股 AI 选股与资讯推送系统。当用户需要 A股选股、股票分析、技术指标计算、早间资讯推送时使用。支持价值投资、成长投资、动量策略、技术分析等多种选股策略。使用 AKShare 免费数据源，集成 Kim 消息推送。
+description: A股 AI 选股与资讯推送系统。当用户需要 A股选股、股票分析、技术指标计算、早间资讯推送时使用。支持价值投资、成长投资、动量策略、技术分析、KDJ等多种选股策略。使用 AKShare 免费数据源，集成 Kim 消息推送。
 ---
 
 # A股 AI 选股系统
@@ -14,7 +14,7 @@ description: A股 AI 选股与资讯推送系统。当用户需要 A股选股、
 - 个股日线数据（前复权）
 - 基本面数据（PE、PB、ROE 等）
 - 热门板块、涨停股票
-- 技术指标计算（MA、RSI）
+- 技术指标计算（MA、RSI、KDJ）
 
 ### 2. 选股策略 (`scripts/screen.py`)
 支持策略：
@@ -23,6 +23,7 @@ description: A股 AI 选股与资讯推送系统。当用户需要 A股选股、
 - **momentum** - 动量策略：近期强势、量价配合
 - **technical** - 技术突破：当日大涨、放量
 - **dividend** - 高股息：低估值、大盘股
+- **kdj** - KDJ超卖：J线在K/D线下方，偏离越大排名越靠前
 
 ### 3. AI 分析 (`scripts/ai_analyze.py`)
 - 生成 AI 分析 Prompt
@@ -47,6 +48,9 @@ python3 ~/.openclaw/skills/a-stock-picker/scripts/screen.py screen --strategy gr
 
 # 动量策略
 python3 ~/.openclaw/skills/a-stock-picker/scripts/screen.py screen --strategy momentum --top 20
+
+# KDJ 超卖选股（J线在K/D线下方，偏离越大排名越靠前）
+python3 ~/.openclaw/skills/a-stock-picker/scripts/screen.py screen --strategy kdj --top 20
 ```
 
 ### 个股深度分析
