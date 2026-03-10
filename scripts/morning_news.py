@@ -54,32 +54,48 @@ class MorningNewsCollector:
     def get_north_flow(self) -> dict:
         """获取北向资金流向"""
         try:
-            flow = ak.stock_hsgt_hist_em(symbol="沪股通")
+            # 使用 stock_hsgt_hist_em 获取北向资金历史数据
+            flow = ak.stock_hsgt_hist_em(symbol="北向资金")
             if not flow.empty:
                 latest = flow.iloc[0]
+                # 尝试多种可能的列名
+                net_amount = latest.get('当日资金流入', latest.get('净流入', latest.get('净买入', 0)))
                 return {
                     "date": latest.get('日期', ''),
-                    "shanghai_net": latest.get('沪股通', 0),
-                    "shenzhen_net": 0,  # 需要单独获取
-                    "total_net": latest.get('沪股通', 0),
-                    "trend": "流入" if latest.get('沪股通', 0) > 0 else "流出"
+                    "total_net": float(net_amount) if net_amount else 0,
+                    "trend": "流入" if float(net_amount) > 0 else "流出" if net_amount else "未知"
                 }
         except Exception as e:
             pass
         
+        # 备用方案：尝试分别获取沪股通和深股通
         try:
-            flow = ak.stock_hsgt_hist_em(symbol="深股通")
-            if not flow.empty:
-                latest = flow.iloc[0]
-                return {
-                    "date": latest.get('日期', ''),
-                    "shenzhen_net": latest.get('深股通', 0),
-                    "trend": "流入" if latest.get('深股通', 0) > 0 else "流出"
-                }
+            sh_flow = ak.stock_hsgt_hist_em(symbol="沪股通")
+            sz_flow = ak.stock_hsgt_hist_em(symbol="深股通")
+            
+            sh_net = 0
+            sz_net = 0
+            latest_date = ""
+            
+            if not sh_flow.empty:
+                latest_sh = sh_flow.iloc[0]
+                sh_net = float(latest_sh.get('当日资金流入', latest_sh.get('净流入', 0)) or 0)
+                latest_date = latest_sh.get('日期', '')
+            
+            if not sz_flow.empty:
+                latest_sz = sz_flow.iloc[0]
+                sz_net = float(latest_sz.get('当日资金流入', latest_sz.get('净流入', 0)) or 0)
+            
+            total = sh_net + sz_net
+            return {
+                "date": latest_date,
+                "shanghai_net": sh_net,
+                "shenzhen_net": sz_net,
+                "total_net": total,
+                "trend": "流入" if total > 0 else "流出" if total < 0 else "持平"
+            }
         except Exception as e:
-            return {"error": str(e)}
-        
-        return {}
+            return {"error": str(e), "total_net": 0, "trend": "未知"}
     
     def get_pre_market_auction(self) -> list:
         """获取集合竞价数据（9:15-9:25）"""

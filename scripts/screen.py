@@ -42,15 +42,37 @@ class StockScreener:
         - ROE > 10%
         - 市值 > 50亿
         """
-        filtered = df[
-            (df['市盈率'] < 20) &
-            (df['市净率'] < 3) &
-            (df['净资产收益率'] > 10) &
-            (df['总市值'] > 50e8)
-        ].copy()
+        # 字段映射（兼容不同数据源）
+        col_map = {
+            '市盈率': ['市盈率', 'PE', 'pe', '市盈(静)', '市盈(动)'],
+            '市净率': ['市净率', 'PB', 'pb'],
+            '净资产收益率': ['净资产收益率', 'ROE', 'roe'],
+            '总市值': ['总市值', '总市值(亿)', 'total_mv']
+        }
+        
+        # 找到实际存在的列名
+        pe_col = next((c for c in col_map['市盈率'] if c in df.columns), None)
+        pb_col = next((c for c in col_map['市净率'] if c in df.columns), None)
+        roe_col = next((c for c in col_map['净资产收益率'] if c in df.columns), None)
+        mv_col = next((c for c in col_map['总市值'] if c in df.columns), None)
+        
+        # 构建筛选条件
+        conditions = pd.Series([True] * len(df))
+        if pe_col:
+            conditions &= (df[pe_col] < 20) & (df[pe_col] > 0)
+        if pb_col:
+            conditions &= (df[pb_col] < 3) & (df[pb_col] > 0)
+        if roe_col:
+            conditions &= (df[roe_col] > 10)
+        if mv_col:
+            mv_threshold = 50e8 if df[mv_col].max() > 1e9 else 50
+            conditions &= (df[mv_col] > mv_threshold)
+        
+        filtered = df[conditions].copy()
         
         # 按 PE 从低到高排序
-        filtered = filtered.sort_values('市盈率')
+        if pe_col:
+            filtered = filtered.sort_values(pe_col)
         return filtered.head(top_n)
     
     def growth_strategy(self, df: pd.DataFrame, top_n: int = 20) -> pd.DataFrame:
@@ -61,18 +83,31 @@ class StockScreener:
         - 净利润增长率 > 20%
         - ROE > 15%
         """
-        # 需要获取更详细的财务数据
-        # 这里使用简化版：基于换手率、量比筛选活跃成长股
-        filtered = df[
-            (df['换手率'] > 3) &
-            (df['量比'] > 1.2) &
-            (df['涨跌幅'] > -5) &
-            (df['涨跌幅'] < 20)
-        ].copy()
+        # 字段映射
+        col_map = {
+            '换手率': ['换手率', 'turnover', 'HSL'],
+            '量比': ['量比', 'volume_ratio', 'LB'],
+            '涨跌幅': ['涨跌幅', 'change', '涨跌幅(%)']
+        }
+        
+        turnover_col = next((c for c in col_map['换手率'] if c in df.columns), None)
+        volume_ratio_col = next((c for c in col_map['量比'] if c in df.columns), None)
+        change_col = next((c for c in col_map['涨跌幅'] if c in df.columns), None)
+        
+        conditions = pd.Series([True] * len(df))
+        if turnover_col:
+            conditions &= (df[turnover_col] > 3)
+        if volume_ratio_col:
+            conditions &= (df[volume_ratio_col] > 1.2)
+        if change_col:
+            conditions &= (df[change_col] > -5) & (df[change_col] < 20)
+        
+        filtered = df[conditions].copy()
         
         # 按市值和流动性排序
-        filtered['score'] = filtered['换手率'] * filtered['量比']
-        filtered = filtered.sort_values('score', ascending=False)
+        if turnover_col and volume_ratio_col:
+            filtered['score'] = filtered[turnover_col] * filtered[volume_ratio_col]
+            filtered = filtered.sort_values('score', ascending=False)
         return filtered.head(top_n)
     
     def momentum_strategy(self, df: pd.DataFrame, top_n: int = 20) -> pd.DataFrame:
@@ -83,15 +118,29 @@ class StockScreener:
         - 换手率适中 (3%-20%)
         - 量比 > 1.5
         """
-        filtered = df[
-            (df['5日涨跌'] > 10) &
-            (df['换手率'] > 3) &
-            (df['换手率'] < 20) &
-            (df['量比'] > 1.5)
-        ].copy()
+        col_map = {
+            '5日涨跌': ['5日涨跌', 'change_5d', '5日涨幅'],
+            '换手率': ['换手率', 'turnover', 'HSL'],
+            '量比': ['量比', 'volume_ratio', 'LB']
+        }
+        
+        change_5d_col = next((c for c in col_map['5日涨跌'] if c in df.columns), None)
+        turnover_col = next((c for c in col_map['换手率'] if c in df.columns), None)
+        volume_ratio_col = next((c for c in col_map['量比'] if c in df.columns), None)
+        
+        conditions = pd.Series([True] * len(df))
+        if change_5d_col:
+            conditions &= (df[change_5d_col] > 10)
+        if turnover_col:
+            conditions &= (df[turnover_col] > 3) & (df[turnover_col] < 20)
+        if volume_ratio_col:
+            conditions &= (df[volume_ratio_col] > 1.5)
+        
+        filtered = df[conditions].copy()
         
         # 按5日涨幅排序
-        filtered = filtered.sort_values('5日涨跌', ascending=False)
+        if change_5d_col:
+            filtered = filtered.sort_values(change_5d_col, ascending=False)
         return filtered.head(top_n)
     
     def technical_strategy(self, df: pd.DataFrame, top_n: int = 20) -> pd.DataFrame:
@@ -102,14 +151,34 @@ class StockScreener:
         - 突破近期高点
         - 成交量放大
         """
-        filtered = df[
-            (df['涨跌幅'] > 3) &
-            (df['换手率'] > 5) &
-            (df['量比'] > 2) &
-            (df['最高'] == df['涨停价'])  # 接近涨停
-        ].copy()
+        col_map = {
+            '涨跌幅': ['涨跌幅', 'change', '涨跌幅(%)'],
+            '换手率': ['换手率', 'turnover', 'HSL'],
+            '量比': ['量比', 'volume_ratio', 'LB'],
+            '最高': ['最高', 'high', '最高价'],
+            '涨停价': ['涨停价', 'limit_up', '涨停']
+        }
         
-        filtered = filtered.sort_values('涨跌幅', ascending=False)
+        change_col = next((c for c in col_map['涨跌幅'] if c in df.columns), None)
+        turnover_col = next((c for c in col_map['换手率'] if c in df.columns), None)
+        volume_ratio_col = next((c for c in col_map['量比'] if c in df.columns), None)
+        high_col = next((c for c in col_map['最高'] if c in df.columns), None)
+        limit_up_col = next((c for c in col_map['涨停价'] if c in df.columns), None)
+        
+        conditions = pd.Series([True] * len(df))
+        if change_col:
+            conditions &= (df[change_col] > 3)
+        if turnover_col:
+            conditions &= (df[turnover_col] > 5)
+        if volume_ratio_col:
+            conditions &= (df[volume_ratio_col] > 2)
+        if high_col and limit_up_col:
+            conditions &= (df[high_col] == df[limit_up_col])
+        
+        filtered = df[conditions].copy()
+        
+        if change_col:
+            filtered = filtered.sort_values(change_col, ascending=False)
         return filtered.head(top_n)
     
     def dividend_strategy(self, df: pd.DataFrame, top_n: int = 20) -> pd.DataFrame:
@@ -120,14 +189,33 @@ class StockScreener:
         - PE < 15
         - 市值 > 100亿
         """
-        filtered = df[
-            (df['市盈率'] < 15) &
-            (df['市净率'] < 2) &
-            (df['总市值'] > 100e8) &
-            (df['涨跌幅'] > -10)
-        ].copy()
+        col_map = {
+            '市盈率': ['市盈率', 'PE', 'pe', '市盈(静)', '市盈(动)'],
+            '市净率': ['市净率', 'PB', 'pb'],
+            '总市值': ['总市值', '总市值(亿)', 'total_mv'],
+            '涨跌幅': ['涨跌幅', 'change', '涨跌幅(%)']
+        }
         
-        filtered = filtered.sort_values('市盈率')
+        pe_col = next((c for c in col_map['市盈率'] if c in df.columns), None)
+        pb_col = next((c for c in col_map['市净率'] if c in df.columns), None)
+        mv_col = next((c for c in col_map['总市值'] if c in df.columns), None)
+        change_col = next((c for c in col_map['涨跌幅'] if c in df.columns), None)
+        
+        conditions = pd.Series([True] * len(df))
+        if pe_col:
+            conditions &= (df[pe_col] < 15)
+        if pb_col:
+            conditions &= (df[pb_col] < 2)
+        if mv_col:
+            mv_threshold = 100e8 if df[mv_col].max() > 1e9 else 100
+            conditions &= (df[mv_col] > mv_threshold)
+        if change_col:
+            conditions &= (df[change_col] > -10)
+        
+        filtered = df[conditions].copy()
+        
+        if pe_col:
+            filtered = filtered.sort_values(pe_col)
         return filtered.head(top_n)
     
     def kdj_strategy(self, df: pd.DataFrame, top_n: int = 20) -> pd.DataFrame:
@@ -197,11 +285,22 @@ class StockScreener:
         # 获取全市场数据
         all_stocks = self.data_api.get_stock_list()
         
+        # 可能的数值列（兼容不同数据源命名）
+        numeric_cols_map = {
+            '市盈率': ['市盈率', 'PE', 'pe', '市盈(静)', '市盈(动)'],
+            '市净率': ['市净率', 'PB', 'pb'],
+            '换手率': ['换手率', 'turnover', 'HSL'],
+            '量比': ['量比', 'volume_ratio', 'LB'],
+            '5日涨跌': ['5日涨跌', 'change_5d', '5日涨幅'],
+            '涨跌幅': ['涨跌幅', 'change', '涨跌幅(%)'],
+            '总市值': ['总市值', '总市值(亿)', 'total_mv']
+        }
+        
         # 清理数据
-        numeric_cols = ['市盈率', '市净率', '换手率', '量比', '5日涨跌', '涨跌幅', '总市值']
-        for col in numeric_cols:
-            if col in all_stocks.columns:
-                all_stocks[col] = pd.to_numeric(all_stocks[col], errors='coerce')
+        for std_col, possible_cols in numeric_cols_map.items():
+            actual_col = next((c for c in possible_cols if c in all_stocks.columns), None)
+            if actual_col:
+                all_stocks[actual_col] = pd.to_numeric(all_stocks[actual_col], errors='coerce')
         
         # 执行策略
         if strategy in self.strategies:

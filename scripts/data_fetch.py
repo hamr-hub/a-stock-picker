@@ -17,6 +17,31 @@ class AStockData:
     def get_stock_list() -> pd.DataFrame:
         """获取 A股所有股票列表"""
         df = ak.stock_zh_a_spot_em()
+        
+        # 列名标准化映射（处理 AKShare 不同版本的列名差异）
+        column_mapping = {
+            '市盈率': ['市盈率', '市盈率(动态)', '市盈率(TTM)', 'pe'],
+            '市净率': ['市净率', '市净率(静态)', 'pb'],
+            '换手率': ['换手率', '换手率(%)', 'turnover'],
+            '量比': ['量比', 'volume_ratio', 'qr'],
+            '涨跌幅': ['涨跌幅', '涨跌幅(%)', 'change_percent'],
+            '最新价': ['最新价', '最新价(元)', 'close', 'price'],
+            '总市值': ['总市值', '总市值(元)', 'market_cap'],
+            '流通市值': ['流通市值', '流通市值(元)', 'float_cap'],
+            '成交额': ['成交额', '成交额(元)', 'amount'],
+            '成交量': ['成交量', 'volume'],
+            '最高': ['最高', '最高价', 'high'],
+            '最低': ['最低', '最低价', 'low'],
+            '今开': ['今开', '开盘价', 'open'],
+            '昨收': ['昨收', '昨收价', 'previous_close'],
+        }
+        
+        for standard_name, possible_names in column_mapping.items():
+            for name in possible_names:
+                if name in df.columns and standard_name not in df.columns:
+                    df[standard_name] = df[name]
+                    break
+        
         return df
     
     @staticmethod
