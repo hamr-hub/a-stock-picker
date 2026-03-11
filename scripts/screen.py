@@ -220,16 +220,15 @@ class StockScreener:
     
     def kdj_strategy(self, df: pd.DataFrame, top_n: int = 5) -> pd.DataFrame:
         """
-        KDJ 选股策略（基于日线，大盘股）
+        KDJ 选股策略（日线+周线分别排行，大盘股）
         筛选条件：
         - 大盘股：市值 >= 500亿
-        - J 线在 K 线和 D 线下方
-        排序：股价越高 + J线偏离KD越大 综合排名
+        - 日线 J 线在 K/D 下方，选偏离最大的 top_n
+        - 周线 J 线在 K/D 下方，选偏离最大的 top_n
+        - 合并两个榜单（去重），附带来源标记
         """
         mv_candidates = ['总市值', 'total_mv', '总市值(亿)']
-        price_candidates = ['最新价', '收盘', 'close', '最新价格']
         mv_col = next((c for c in mv_candidates if c in df.columns), None)
-        price_col = next((c for c in price_candidates if c in df.columns), None)
 
         filtered_df = df.copy()
         if mv_col:
@@ -241,36 +240,49 @@ class StockScreener:
         stock_list = filtered_df['代码'].tolist() if '代码' in filtered_df.columns else []
 
         total = len(stock_list)
-        print(f"大盘股（市值>=500亿）共 {total} 只，开始计算 KDJ...", file=sys.stderr)
+        print(f"大盘股（市值>=500亿）共 {total} 只，开始计算日线+周线 KDJ...", file=sys.stderr)
 
         df_indexed = filtered_df.set_index('代码')
-        results = []
+        daily_results = []
+        weekly_results = []
         done = [0]
 
         def calc_one(code):
             try:
                 daily = self.data_api.get_stock_daily(code, days=60)
-                if daily.empty or len(daily) < 15:
-                    return None
-                daily = self.data_api.calculate_kdj(daily)
-                latest = daily.iloc[-1]
-                k_val = latest['K']
-                d_val = latest['D']
-                j_val = latest['J']
-                kd_avg = (k_val + d_val) / 2
-                deviation = kd_avg - j_val
-                if j_val < k_val and j_val < d_val:
-                    row = df_indexed.loc[code].to_dict()
-                    row['代码'] = code
-                    row['K'] = round(k_val, 2)
-                    row['D'] = round(d_val, 2)
-                    row['J'] = round(j_val, 2)
-                    row['KD均值'] = round(kd_avg, 2)
-                    row['J偏离KD'] = round(deviation, 2)
-                    return row
+                weekly = self.data_api.get_stock_weekly(code, days=180)
+
+                d_row = None
+                w_row = None
+                base = df_indexed.loc[code].to_dict()
+                base['代码'] = code
+
+                if not daily.empty and len(daily) >= 15:
+                    daily = self.data_api.calculate_kdj(daily)
+                    d = daily.iloc[-1]
+                    dk, dd, dj = d['K'], d['D'], d['J']
+                    if dj < dk and dj < dd:
+                        d_row = dict(base)
+                        d_row['日K'] = round(dk, 2)
+                        d_row['日D'] = round(dd, 2)
+                        d_row['日J'] = round(dj, 2)
+                        d_row['日J偏离KD'] = round((dk + dd) / 2 - dj, 2)
+
+                if not weekly.empty and len(weekly) >= 9:
+                    weekly = self.data_api.calculate_kdj(weekly)
+                    w = weekly.iloc[-1]
+                    wk, wd, wj = w['K'], w['D'], w['J']
+                    if wj < wk and wj < wd:
+                        w_row = dict(base)
+                        w_row['周K'] = round(wk, 2)
+                        w_row['周D'] = round(wd, 2)
+                        w_row['周J'] = round(wj, 2)
+                        w_row['周J偏离KD'] = round((wk + wd) / 2 - wj, 2)
+
+                return d_row, w_row
             except Exception:
                 pass
-            return None
+            return None, None
 
         with ThreadPoolExecutor(max_workers=8) as executor:
             futures = {executor.submit(calc_one, code): code for code in stock_list}
@@ -278,33 +290,64 @@ class StockScreener:
                 done[0] += 1
                 if done[0] % 200 == 0:
                     print(f"进度: {done[0]}/{total}", file=sys.stderr)
-                row = future.result()
-                if row:
-                    results.append(row)
+                d_row, w_row = future.result()
+                if d_row:
+                    daily_results.append(d_row)
+                if w_row:
+                    weekly_results.append(w_row)
 
-        result_df = pd.DataFrame(results)
-        if result_df.empty:
-            return result_df
+        daily_df = pd.DataFrame(daily_results)
+        weekly_df = pd.DataFrame(weekly_results)
 
-        if price_col and price_col in result_df.columns:
-            result_df[price_col] = pd.to_numeric(result_df[price_col], errors='coerce')
-            price_max = result_df[price_col].max()
-            price_min = result_df[price_col].min()
-            dev_max = result_df['J偏离KD'].max()
-            dev_min = result_df['J偏离KD'].min()
+        if daily_df.empty and weekly_df.empty:
+            return pd.DataFrame()
 
-            price_range = price_max - price_min if price_max != price_min else 1
-            dev_range = dev_max - dev_min if dev_max != dev_min else 1
+        top_daily = pd.DataFrame()
+        top_weekly = pd.DataFrame()
 
-            result_df['price_norm'] = (result_df[price_col] - price_min) / price_range
-            result_df['dev_norm'] = (result_df['J偏离KD'] - dev_min) / dev_range
-            result_df['综合得分'] = result_df['price_norm'] * 0.5 + result_df['dev_norm'] * 0.5
-            result_df = result_df.sort_values('综合得分', ascending=False)
-            result_df = result_df.drop(columns=['price_norm', 'dev_norm', '综合得分'])
-        else:
-            result_df = result_df.sort_values('J偏离KD', ascending=False)
+        if not daily_df.empty:
+            top_daily = daily_df.sort_values('日J偏离KD', ascending=False).head(top_n).copy()
+            top_daily['来源'] = '日线'
 
-        return result_df.head(top_n)
+        if not weekly_df.empty:
+            top_weekly = weekly_df.sort_values('周J偏离KD', ascending=False).head(top_n).copy()
+            top_weekly['来源'] = '周线'
+
+        merged = pd.concat([top_daily, top_weekly], ignore_index=True)
+
+        seen = set()
+        deduped = []
+        for _, row in merged.iterrows():
+            code = row['代码']
+            if code in seen:
+                idx = next(i for i, r in enumerate(deduped) if r['代码'] == code)
+                deduped[idx]['来源'] = '日线+周线'
+                d_dev = row.get('日J偏离KD', deduped[idx].get('日J偏离KD', 0))
+                w_dev = row.get('周J偏离KD', deduped[idx].get('周J偏离KD', 0))
+                for k, v in row.items():
+                    if pd.notna(v) and k not in deduped[idx]:
+                        deduped[idx][k] = v
+                    elif pd.notna(v) and k in ('日K', '日D', '日J', '日J偏离KD', '周K', '周D', '周J', '周J偏离KD'):
+                        deduped[idx][k] = v
+            else:
+                seen.add(code)
+                deduped.append(row.to_dict())
+
+        result_df = pd.DataFrame(deduped)
+
+        daily_rank = {row['代码']: i for i, (_, row) in enumerate(top_daily.iterrows())} if not top_daily.empty else {}
+        weekly_rank = {row['代码']: i for i, (_, row) in enumerate(top_weekly.iterrows())} if not top_weekly.empty else {}
+
+        def sort_key(row):
+            code = row['代码']
+            dr = daily_rank.get(code, top_n)
+            wr = weekly_rank.get(code, top_n)
+            return min(dr, wr)
+
+        result_df['_sort'] = result_df.apply(sort_key, axis=1)
+        result_df = result_df.sort_values('_sort').drop(columns=['_sort'])
+
+        return result_df
     
     def run_screening(self, strategy: str = "value", top_n: int = 20) -> pd.DataFrame:
         """
@@ -397,7 +440,7 @@ def main():
         
         # 选择输出列
         if args.strategy == 'kdj':
-            output_cols = ['代码', '名称', '最新价', '收盘', '涨跌幅', 'K', 'D', 'J', 'KD均值', 'J偏离KD', '换手率', '总市值']
+            output_cols = ['代码', '名称', '来源', '最新价', '收盘', '涨跌幅', '日K', '日D', '日J', '日J偏离KD', '周K', '周D', '周J', '周J偏离KD', '换手率', '总市值']
         else:
             output_cols = ['代码', '名称', '最新价', '涨跌幅', '市盈率', '市净率', '换手率', '总市值']
         available_cols = [c for c in output_cols if c in result.columns]
